@@ -178,8 +178,9 @@ public class JdkSelectorDialog extends Dialog {
 				display.asyncExec(() -> {
 					distributionComboBox.removeAll();
 					SemVer selectedSemver = SemVer.fromText(items[selectedIndex]).getSemVer1();
-					List<Distribution> distributions = discoClient.getDistributionsThatSupport(selectedSemver, null, null, null, null, PackageType.JDK, javafxBundledCheckBox.getSelection(), true);
-					
+					//List<Distribution> distributions = discoClient.getDistributionsThatSupport(selectedSemver, null, null, null, null, PackageType.JDK, javafxBundledCheckBox.getSelection(), true);
+					List<Distribution> distributions = discoClient.getDistributionsForSemVer(selectedSemver);
+                    
 					distributions.stream()
                     			 .sorted(Comparator.comparing(Distribution::getName).reversed())
                     			 .forEach(distro -> distributionComboBox.add(distro.getUiString()));

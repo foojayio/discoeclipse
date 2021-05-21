@@ -42,9 +42,11 @@ import io.foojay.api.discoclient.pkg.ArchiveType;
 import io.foojay.api.discoclient.pkg.Distribution;
 import io.foojay.api.discoclient.pkg.LibCType;
 import io.foojay.api.discoclient.pkg.MajorVersion;
+import io.foojay.api.discoclient.pkg.Match;
 import io.foojay.api.discoclient.pkg.OperatingSystem;
 import io.foojay.api.discoclient.pkg.PackageType;
 import io.foojay.api.discoclient.pkg.Pkg;
+import io.foojay.api.discoclient.pkg.ReleaseStatus;
 import io.foojay.api.discoclient.pkg.Scope;
 import io.foojay.api.discoclient.pkg.SemVer;
 import io.foojay.api.discoclient.pkg.VersionNumber;
@@ -54,32 +56,56 @@ import io.foojay.api.discoclient.util.ReadableConsumerByteChannel;
 
 
 public class JdkSelectorDialog extends Dialog {
-	private Display            display;
-	private DiscoClient 	   discoClient;
-	private OperatingSystem    operatingSystem;
-	private List<MajorVersion> maintainedVersions;
-	private List<Pkg>          selectedPkgs;
-	private Pkg                selectedPkg;
-	private Combo  			   majorVersionComboBox;
-	private Combo  			   versionNumberComboBox;
-	private Combo  			   distributionComboBox;
-	private Combo  			   operatingSystemComboBox;
-	private Combo			   libcTypeComboBox;
-	private Combo  			   architectureComboBox;
-	private Combo  			   archiveTypeComboBox;
-	private Label  			   filenameLabel;
-	private ProgressBar 	   progressBar;
-	private Button      	   downloadButton;
+	private Display              display;
+	private DiscoClient 	     discoClient;
+	private OperatingSystem      operatingSystem;
+	private List<MajorVersion>   maintainedVersions;
+	private List<Pkg>            selectedPkgs;
+	private Pkg                  selectedPkg;
+	private List<Pkg>            selectedPkgsForMajorVersion;
+	
+	private List<Distribution>   distributionsThatSupportFx;
+	private Button 				 javafxBundledCheckBox;
+	private Combo  			     majorVersionComboBox;
+	private Combo  			     versionNumberComboBox;
+	private Combo  			     distributionComboBox;
+	private Combo  			     operatingSystemComboBox;
+	private Combo			     libcTypeComboBox;
+	private Combo  			     architectureComboBox;
+	private Combo  			     archiveTypeComboBox;
+	private Label  			     filenameLabel;
+	private ProgressBar 	     progressBar;
+	private Button      	     downloadButton;
+	
+	private boolean              javafxBundled;
+    private MajorVersion         selectedMajorVersion;
+    private SemVer               selectedVersionNumber;
+    private Distribution         selectedDistribution;
+    private OperatingSystem      selectedOperatingSystem;
+    private LibCType             selectedLibcType;
+    private Architecture         selectedArchitecture;
+    private ArchiveType          selectedArchiveType;
+    private Set<OperatingSystem> operatingSystems;
+    private Set<Architecture>    architectures;
+    private Set<LibCType>        libcTypes;
+    private Set<ArchiveType>     archiveTypes;
 		
 	
 	public JdkSelectorDialog(final Shell parentShell) {
 		super(parentShell);
-		display            = parentShell.getDisplay();
-		discoClient        = new DiscoClient("Eclipse");
-		operatingSystem    = DiscoClient.getOperatingSystem();
-		maintainedVersions = new LinkedList<>();
-		selectedPkgs       = new LinkedList<>();
-		selectedPkg        = null;
+		display            			= parentShell.getDisplay();
+		discoClient        			= new DiscoClient("Eclipse");
+		operatingSystem    			= DiscoClient.getOperatingSystem();
+		maintainedVersions 		    = new LinkedList<>();
+		selectedPkgs       			= new LinkedList<>();
+		selectedPkg        			= null;
+		selectedPkgsForMajorVersion = new LinkedList<>();
+		javafxBundled      			= false;
+        operatingSystems   			= new TreeSet<>();
+        libcTypes          			= new TreeSet<>();
+        architectures      			= new TreeSet<>();
+        archiveTypes                = new TreeSet<>();
+        distributionsThatSupportFx  = List.of(DiscoClient.getDistributionFromText("zulu"), DiscoClient.getDistributionFromText("liberica"), DiscoClient.getDistributionFromText("corretto"));
 	}
 	
 	
@@ -91,15 +117,6 @@ public class JdkSelectorDialog extends Dialog {
 		display.asyncExec(() -> {
 			maintainedVersions.addAll(discoClient.getMaintainedMajorVersions(true,  true));	
             maintainedVersions.forEach(majorVersion -> majorVersionComboBox.add(Integer.toString(majorVersion.getAsInt())));
-            operatingSystemComboBox.add(OperatingSystem.LINUX.getUiString());
-            operatingSystemComboBox.add(OperatingSystem.MACOS.getUiString());
-            operatingSystemComboBox.add(OperatingSystem.WINDOWS.getUiString());
-            for (int i = 0 ; i < operatingSystemComboBox.getItemCount() ; i++) {
-            	if (operatingSystemComboBox.getItem(i).equals(operatingSystem.getUiString())) {
-            		operatingSystemComboBox.select(i);
-            		break;
-            	}
-            }
             majorVersionComboBox.select(0);
             majorVersionComboBox.notifyListeners(SWT.Selection, new Event());
 		});
@@ -110,17 +127,37 @@ public class JdkSelectorDialog extends Dialog {
         GridLayout layout    = new GridLayout(2, false);
         container.setLayout(layout);
         
-        Button javafxBundledCheckBox = new Button(container, SWT.CHECK);
+        javafxBundledCheckBox = new Button(container, SWT.CHECK);
         javafxBundledCheckBox.setText("JavaFX bundled");
         javafxBundledCheckBox.setLayoutData(new GridData(SWT.RIGHT, SWT.CENTER, true, false, 2, 1));
         javafxBundledCheckBox.addSelectionListener(new SelectionListener() {
 			@Override public void widgetSelected(SelectionEvent e) {
-				selectedPkgs.clear();
-				String[] items         = majorVersionComboBox.getItems();
-				int      selectedIndex = majorVersionComboBox.getSelectionIndex();
-				if (items.length == 0 || selectedIndex == -1) { return; }
-				MajorVersion selectedMajorVersion = maintainedVersions.get(selectedIndex);
-				display.asyncExec(() -> majorVersionComboBox.select(selectedIndex));
+				javafxBundled = javafxBundledCheckBox.getSelection();
+				
+				boolean include_build = selectedMajorVersion.isEarlyAccessOnly();
+	            List<Distribution> distrosForSelection = selectedPkgsForMajorVersion.stream()
+	                                                                                .filter(pkg -> javafxBundled == pkg.isJavaFXBundled())
+	                                                                                .filter(pkg -> pkg.getJavaVersion().getVersionNumber().toString(OutputFormat.REDUCED_COMPRESSED,true,include_build).equals(selectedVersionNumber.getVersionNumber().toString(OutputFormat.REDUCED_COMPRESSED,true,include_build)))
+	                                                                                .map(pkg -> pkg.getDistribution())
+	                                                                                .distinct()
+	                                                                                .sorted(Comparator.comparing(Distribution::getName).reversed())
+	                                                                                .collect(Collectors.toList());
+	            display.asyncExec(() -> {
+	    			distributionComboBox.removeAll();
+	    			
+	    			distrosForSelection.stream().forEach(distro -> distributionComboBox.add(distro.getUiString()));
+	    			if (distrosForSelection.size() > 0) {
+	    		        distributionComboBox.select(0);		
+	    		        distributionComboBox.notifyListeners(SWT.Selection, new Event());
+	    			} else {
+	    				operatingSystemComboBox.removeAll();
+	    				libcTypeComboBox.removeAll();
+	    				architectureComboBox.removeAll();
+	    				archiveTypeComboBox.removeAll();
+	    				filenameLabel.setText("-");
+	    			}
+	    		    selectDistribution();
+	    		});
 			}
 
 			@Override public void widgetDefaultSelected(SelectionEvent e) {}
@@ -136,24 +173,9 @@ public class JdkSelectorDialog extends Dialog {
         majorVersionData.widthHint = 150;
         majorVersionComboBox.setLayoutData(majorVersionData);
         majorVersionComboBox.addSelectionListener(new SelectionListener() {
-			@Override public void widgetSelected(SelectionEvent e) {
-				String[] items         = majorVersionComboBox.getItems();
-				int      selectedIndex = majorVersionComboBox.getSelectionIndex();
-				if (items.length == 0 || selectedIndex == -1) { return; }				
-				MajorVersion selectedMajorVersion = maintainedVersions.get(selectedIndex);
-				final boolean include_build = selectedMajorVersion.isEarlyAccessOnly();
-				List<String> versionList = selectedMajorVersion.getVersions()
-										                       .stream()
-										                       .sorted(Comparator.comparing(SemVer::getVersionNumber).reversed())
-										                       .map(semVer -> semVer.getVersionNumber().toString(OutputFormat.REDUCED_COMPRESSED, true, include_build))
-										                       .distinct()
-										                       .collect(Collectors.toList());
-				display.asyncExec(() -> {
-				    versionNumberComboBox.removeAll();
-				    versionList.forEach(version -> versionNumberComboBox.add(version));
-				    versionNumberComboBox.select(0);
-				    versionNumberComboBox.notifyListeners(SWT.Selection, new Event());
-				});
+			@Override public void widgetSelected(SelectionEvent e) { 
+				if (-1 == majorVersionComboBox.getSelectionIndex()) { return; }
+				selectMajorVersion(); 
 			}
 
 			@Override public void widgetDefaultSelected(SelectionEvent e) {}
@@ -170,24 +192,10 @@ public class JdkSelectorDialog extends Dialog {
         versionNumberData.widthHint = 150;
         versionNumberComboBox.setLayoutData(versionNumberData);
         versionNumberComboBox.addSelectionListener(new SelectionListener() {
-			@Override public void widgetSelected(SelectionEvent e) {
-				String[] items         = versionNumberComboBox.getItems();
-				int      selectedIndex = versionNumberComboBox.getSelectionIndex();
-				if (items.length == 0 || selectedIndex == -1) { return; }
-				
-				display.asyncExec(() -> {
-					distributionComboBox.removeAll();
-					SemVer selectedSemver = SemVer.fromText(items[selectedIndex]).getSemVer1();
-					//List<Distribution> distributions = discoClient.getDistributionsThatSupport(selectedSemver, null, null, null, null, PackageType.JDK, javafxBundledCheckBox.getSelection(), true);
-					List<Distribution> distributions = discoClient.getDistributionsForSemVer(selectedSemver);
-                    
-					distributions.stream()
-                    			 .sorted(Comparator.comparing(Distribution::getName).reversed())
-                    			 .forEach(distro -> distributionComboBox.add(distro.getUiString()));
-					
-				    distributionComboBox.select(0);		
-				    distributionComboBox.notifyListeners(SWT.Selection, new Event());
-				});
+			@Override public void widgetSelected(SelectionEvent e) { 
+				if (-1 == majorVersionComboBox.getSelectionIndex()) { return; }
+				if (-1 == versionNumberComboBox.getSelectionIndex()) { return; }
+				selectVersionNumber(); 
 			}
 
 			@Override public void widgetDefaultSelected(SelectionEvent e) {}
@@ -207,24 +215,7 @@ public class JdkSelectorDialog extends Dialog {
 				if (-1 == majorVersionComboBox.getSelectionIndex()) { return; }
 				if (-1 == versionNumberComboBox.getSelectionIndex()) { return; }
 				if (-1 == operatingSystemComboBox.getSelectionIndex()) { return; }
-				
-				String[] items         = distributionComboBox.getItems();
-				int      selectedIndex = distributionComboBox.getSelectionIndex();
-				if (items.length == 0 || selectedIndex == -1) { return; }
-				
-				display.asyncExec(() -> {
-					Distribution  distribution = DiscoClient.getDistributionFromText(items[selectedIndex]);
-					VersionNumber version      = VersionNumber.fromText(versionNumberComboBox.getItems()[versionNumberComboBox.getSelectionIndex()]);
-					List<Pkg> pkgs = discoClient.getPkgs(distribution, version, null, null, null, null, null, null, PackageType.JDK, javafxBundledCheckBox.getSelection(), true, null, null, Scope.BUILD_OF_OPEN_JDK);
-					selectedPkgs.clear();
-					selectedPkgs.addAll(pkgs);
-					Set<OperatingSystem> operatingSystemsForSelectedDistribution = new TreeSet<>();
-					selectedPkgs.forEach(pkg -> operatingSystemsForSelectedDistribution.add(pkg.getOperatingSystem()));
-					operatingSystemComboBox.removeAll();
-					operatingSystemsForSelectedDistribution.forEach(os -> operatingSystemComboBox.add(os.getUiString()));
-					operatingSystemComboBox.select(0);
-					operatingSystemComboBox.notifyListeners(SWT.Selection, new Event());
-				});
+				selectDistribution();
 			}
 
 			@Override public void widgetDefaultSelected(SelectionEvent e) {}
@@ -245,22 +236,7 @@ public class JdkSelectorDialog extends Dialog {
 				if (-1 == versionNumberComboBox.getSelectionIndex()) { return; }
 				if (-1 == operatingSystemComboBox.getSelectionIndex()) { return; }
 				if (-1 == distributionComboBox.getSelectionIndex()) { return ; }
-				
-				String[] items         = operatingSystemComboBox.getItems();
-				int      selectedIndex = operatingSystemComboBox.getSelectionIndex();
-				if (items.length == 0 || selectedIndex == -1) { return; }
-				
-				display.asyncExec(() -> {
-					Set<LibCType> libcTypesForSelectedOperatingSystem = new TreeSet<>();
-	                selectedPkgs.stream()
-	                            .filter(pkg -> pkg.getOperatingSystem() == OperatingSystem.fromText(items[selectedIndex]))
-	                            .map(pkg -> pkg.getLibCType())
-	                            .forEach(libcType -> libcTypesForSelectedOperatingSystem.add(libcType));
-	                libcTypeComboBox.removeAll();
-	                libcTypesForSelectedOperatingSystem.forEach(libcType -> libcTypeComboBox.add(libcType.getUiString()));
-	                libcTypeComboBox.select(0);
-	                libcTypeComboBox.notifyListeners(SWT.Selection, new Event());
-				});
+				selectOperatingSystem();
 			}
 
 			@Override public void widgetDefaultSelected(SelectionEvent e) {}
@@ -281,27 +257,7 @@ public class JdkSelectorDialog extends Dialog {
 				if (-1 == versionNumberComboBox.getSelectionIndex()) { return; }
 				if (-1 == operatingSystemComboBox.getSelectionIndex()) { return; }
 				if (-1 == distributionComboBox.getSelectionIndex()) { return ; }
-				
-				String[] items         = libcTypeComboBox.getItems();
-				int      selectedIndex = libcTypeComboBox.getSelectionIndex();
-				if (items.length == 0 || selectedIndex == -1) { return; }
-				
-				String[] osItems         = operatingSystemComboBox.getItems();
-				int      selectedOsIndex = operatingSystemComboBox.getSelectionIndex();
-				if (osItems.length == 0 || selectedOsIndex == -1) { return; }
-				
-				display.asyncExec(() -> {
-					Set<Architecture> architecturesForSelectedOperatingSystem = new TreeSet<>();
-	                selectedPkgs.stream()
-	                            .filter(pkg -> pkg.getOperatingSystem() == OperatingSystem.fromText(osItems[selectedOsIndex]))
-	                            .filter(pkg -> pkg.getLibCType()        == LibCType.fromText(items[selectedIndex]))
-	                            .map(pkg -> pkg.getArchitecture())
-	                            .forEach(architecture -> architecturesForSelectedOperatingSystem.add(architecture));
-	                architectureComboBox.removeAll();
-	                architecturesForSelectedOperatingSystem.forEach(architecture -> architectureComboBox.add(architecture.getUiString()));
-	                architectureComboBox.select(0);
-	                architectureComboBox.notifyListeners(SWT.Selection, new Event());
-				});
+				selectLibcType();
 			}
 
 			@Override public void widgetDefaultSelected(SelectionEvent e) {}
@@ -322,33 +278,7 @@ public class JdkSelectorDialog extends Dialog {
 				if (-1 == versionNumberComboBox.getSelectionIndex()) { return; }
 				if (-1 == operatingSystemComboBox.getSelectionIndex()) { return; }
 				if (-1 == distributionComboBox.getSelectionIndex()) { return ; }
-				
-				String[] items         = architectureComboBox.getItems();
-				int      selectedIndex = architectureComboBox.getSelectionIndex();
-				if (items.length == 0 || selectedIndex == -1) { return; }
-				
-				String[] osItems         = operatingSystemComboBox.getItems();
-				int      selectedOsIndex = operatingSystemComboBox.getSelectionIndex();
-				if (osItems.length == 0 || selectedOsIndex == -1) { return; }
-				
-				String[] libcItems         = libcTypeComboBox.getItems();
-				int      selectedLibcIndex = libcTypeComboBox.getSelectionIndex();
-				if (libcItems.length == 0 || selectedLibcIndex == -1) { return; }
-				
-				display.asyncExec(() -> {
-					Set<ArchiveType> archiveTypesForSelectedArchitecture = new TreeSet<>();
-	                selectedPkgs.stream()
-	                            .filter(pkg -> pkg.getOperatingSystem() == OperatingSystem.fromText(osItems[selectedOsIndex]))
-	                            .filter(pkg -> pkg.getLibCType()        == LibCType.fromText(libcItems[selectedLibcIndex]))
-	                            .filter(pkg -> pkg.getArchitecture()    == Architecture.fromText(items[selectedIndex]))
-	                            .map(pkg -> pkg.getArchiveType())
-	                            .forEach(archiveType -> archiveTypesForSelectedArchitecture.add(archiveType));
-	                archiveTypeComboBox.removeAll();
-	                archiveTypesForSelectedArchitecture.forEach(archiveType -> archiveTypeComboBox.add(archiveType.getUiString()));
-	                archiveTypeComboBox.select(0);
-	                archiveTypeComboBox.notifyListeners(SWT.Selection, new Event());
-				});
-				
+				selectArchitecture();	
 			}
 
 			@Override public void widgetDefaultSelected(SelectionEvent e) {}
@@ -365,39 +295,7 @@ public class JdkSelectorDialog extends Dialog {
         archiveTypeComboBox.setLayoutData(archiveTypeData);
         archiveTypeComboBox.addSelectionListener(new SelectionListener() {
 			@Override public void widgetSelected(SelectionEvent e) {
-				String[] items         = archiveTypeComboBox.getItems();
-				int      selectedIndex = archiveTypeComboBox.getSelectionIndex();
-				if (items.length == 0 || selectedIndex == -1) { return; }
-				
-				String[] osItems         = operatingSystemComboBox.getItems();
-				int      selectedOsIndex = operatingSystemComboBox.getSelectionIndex();
-				if (osItems.length == 0 || selectedOsIndex == -1) { return; }
-				
-				String[] libcItems         = libcTypeComboBox.getItems();
-				int      selectedLibcIndex = libcTypeComboBox.getSelectionIndex();
-				if (libcItems.length == 0 || selectedLibcIndex == -1) { return; }
-				
-				String[] arcItems         = architectureComboBox.getItems();
-				int      selectedArcIndex = architectureComboBox.getSelectionIndex();
-				if (arcItems.length == 0 || selectedArcIndex == -1) { return; }
-				
-				Optional<Pkg> optionalPkg = selectedPkgs.stream()
-								                        .filter(pkg -> pkg.getOperatingSystem() == OperatingSystem.fromText(osItems[selectedOsIndex]))
-								                        .filter(pkg -> pkg.getLibCType()        == LibCType.fromText(libcItems[selectedLibcIndex]))
-								                        .filter(pkg -> pkg.getArchitecture()    == Architecture.fromText(arcItems[selectedArcIndex]))
-								                        .filter(pkg -> pkg.getArchiveType()     == ArchiveType.fromText(items[selectedIndex]))
-								                        .findFirst();
-				display.asyncExec(() -> {
-					if (optionalPkg.isPresent()) {
-		                selectedPkg = optionalPkg.get();
-	                    filenameLabel.setText(selectedPkg.getFileName());
-	                    downloadButton.setEnabled(true);
-		            } else {
-		                selectedPkg = null;
-		                filenameLabel.setText("-");
-		                downloadButton.setEnabled(false);
-		            }
-				});
+				selectArchiveType();
 			}
 
 			@Override public void widgetDefaultSelected(SelectionEvent e) {}
@@ -463,6 +361,216 @@ public class JdkSelectorDialog extends Dialog {
         return new Point(280, 400);
     }
     
+    
+    private void selectMajorVersion() {
+    	String[] items         = majorVersionComboBox.getItems();
+		int      selectedIndex = majorVersionComboBox.getSelectionIndex();
+		if (items.length == 0 || selectedIndex == -1) { return; }				
+		selectedMajorVersion = maintainedVersions.get(selectedIndex);
+    	final boolean include_build = selectedMajorVersion.isEarlyAccessOnly();
+    	display.asyncExec(() -> javafxBundledCheckBox.setEnabled(false));
+    	discoClient.getPkgsForFeatureVersionAsync(distributionsThatSupportFx, selectedMajorVersion.getAsInt(), include_build ? List.of(ReleaseStatus.EA) : List.of(ReleaseStatus.GA), true, List.of(Scope.PUBLIC, Scope.DIRECTLY_DOWNLOADABLE, Scope.BUILD_OF_OPEN_JDK), Match.ANY)
+        		   .thenAccept(pkgs -> {
+			            selectedPkgsForMajorVersion.clear();
+			            selectedPkgsForMajorVersion.addAll(pkgs);
+			            display.asyncExec(() -> {
+			            	javafxBundledCheckBox.setEnabled(true);
+			                versionNumberComboBox.notifyListeners(SWT.Selection, new Event());
+			            });
+			            selectVersionNumber();
+			        });
+    	
+    	
+    	List<SemVer> versionList = selectedMajorVersion.getVersions()
+										               .stream()
+										               .filter(semVer -> selectedMajorVersion.isEarlyAccessOnly() ? (semVer.getReleaseStatus() == ReleaseStatus.EA) : (semVer.getReleaseStatus() == ReleaseStatus.GA))
+										               .sorted(Comparator.comparing(SemVer::getVersionNumber).reversed())
+										               .map(semVer -> semVer.getVersionNumber().toString(OutputFormat.REDUCED_COMPRESSED, true, include_build))
+										               .distinct().map(versionString -> SemVer.fromText(versionString).getSemVer1())
+										               .collect(Collectors.toList());
+    	
+		display.asyncExec(() -> {
+		    versionNumberComboBox.removeAll();
+		    versionList.forEach(version -> versionNumberComboBox.add(version.toString(true)));
+		    versionNumberComboBox.select(0);
+		    versionNumberComboBox.notifyListeners(SWT.Selection, new Event());
+		    selectVersionNumber();
+		});
+    }
+    
+    private void selectVersionNumber() {
+    	String[] items         = versionNumberComboBox.getItems();
+		int      selectedIndex = versionNumberComboBox.getSelectionIndex();
+		if (items.length == 0 || selectedIndex == -1) { return; }
+		
+		display.asyncExec(() -> {
+			selectedVersionNumber = SemVer.fromText(items[selectedIndex]).getSemVer1();
+			
+			List<Distribution> distrosForSelection;
+			if (javafxBundled) {
+				boolean include_build = selectedMajorVersion.isEarlyAccessOnly();
+				distrosForSelection = selectedPkgsForMajorVersion.stream()
+                        .filter(pkg -> javafxBundled == pkg.isJavaFXBundled())
+                        .filter(pkg -> pkg.getJavaVersion().getVersionNumber().toString(OutputFormat.REDUCED_COMPRESSED,true,include_build).equals(selectedVersionNumber.getVersionNumber().toString(OutputFormat.REDUCED_COMPRESSED,true,include_build)))
+                        .map(pkg -> pkg.getDistribution())
+                        .distinct()
+                        .sorted(Comparator.comparing(Distribution::getName).reversed())
+                        .collect(Collectors.toList());
+			} else {
+				distrosForSelection = discoClient.getDistributionsForSemVerAsync(selectedVersionNumber)
+                        .thenApply(distros -> distros.stream()
+                                                     .filter(distro -> distro.getScopes().contains(Scope.DIRECTLY_DOWNLOADABLE))
+                                                     .sorted(Comparator.comparing(Distribution::getName).reversed()))
+                        .join()
+                        .collect(Collectors.toList());
+			}
+			
+			distributionComboBox.removeAll();
+			distrosForSelection.stream().forEach(distro -> distributionComboBox.add(distro.getUiString()));
+			if (distrosForSelection.size() > 0) {
+				distributionComboBox.select(0);		
+			    distributionComboBox.notifyListeners(SWT.Selection, new Event());
+			} else {
+				operatingSystemComboBox.removeAll();
+                libcTypeComboBox.removeAll();
+                architectureComboBox.removeAll();
+                archiveTypeComboBox.removeAll();
+			}
+		    selectDistribution();
+		});
+    }
+    
+    private void selectDistribution() {
+    	String[] items         = distributionComboBox.getItems();
+		int      selectedIndex = distributionComboBox.getSelectionIndex();
+		if (items.length == 0 || selectedIndex == -1) { return; }
+		
+		selectedDistribution = discoClient.getDistributionFromText(items[selectedIndex]);
+		
+		selectedPkgs.clear();
+        operatingSystems.clear();
+        architectures.clear();
+        libcTypes.clear();
+        archiveTypes.clear();
+		
+        selectedPkgs.addAll(discoClient.getPkgs(List.of(selectedDistribution), VersionNumber.fromText((selectedVersionNumber).toString(true)), null, null, null, null, null, null, PackageType.JDK,
+                								null, true, null, null,List.of(Scope.PUBLIC, Scope.DIRECTLY_DOWNLOADABLE, Scope.BUILD_OF_OPEN_JDK), Match.ANY));
+        selectedPkgs.forEach(pkg -> {
+            operatingSystems.add(pkg.getOperatingSystem());
+            architectures.add(pkg.getArchitecture());
+            libcTypes.add(pkg.getLibCType());
+            archiveTypes.add(pkg.getArchiveType());
+        });
+        
+        
+		display.asyncExec(() -> {
+			operatingSystemComboBox.removeAll();
+			operatingSystems.forEach(os -> operatingSystemComboBox.add(os.getUiString()));
+			for (int i = 0 ; i < operatingSystems.size() ; i++) {
+				if (operatingSystemComboBox.getItem(i).equals(discoClient.getOperatingSystem().getUiString())) {
+					operatingSystemComboBox.select(i);
+					break;
+				}
+			}
+			operatingSystemComboBox.notifyListeners(SWT.Selection, new Event());
+			selectOperatingSystem();
+		});
+    }
+    
+    private void selectOperatingSystem() {
+    	String[] items         = operatingSystemComboBox.getItems();
+		int      selectedIndex = operatingSystemComboBox.getSelectionIndex();
+		if (items.length == 0 || selectedIndex == -1) { return; }
+		
+		selectedOperatingSystem = OperatingSystem.fromText(items[selectedIndex]);
+		List<Pkg> selection = selectedPkgs.stream()
+                .filter(pkg -> pkg.isJavaFXBundled() == javafxBundled)
+                .filter(pkg -> selectedDistribution.getApiString().equals(pkg.getDistribution().getApiString()))
+                .filter(pkg -> selectedOperatingSystem == pkg.getOperatingSystem())
+                .collect(Collectors.toList());
+        libcTypes = selection.stream().map(pkg -> pkg.getLibCType()).collect(Collectors.toSet());
+		display.asyncExec(() -> {
+            libcTypeComboBox.removeAll();
+            libcTypes.forEach(libcType -> libcTypeComboBox.add(libcType.getUiString()));
+            libcTypeComboBox.select(0);
+            libcTypeComboBox.notifyListeners(SWT.Selection, new Event());
+            selectLibcType();
+		});
+    }
+    
+    private void selectLibcType() {
+    	String[] items         = libcTypeComboBox.getItems();
+		int      selectedIndex = libcTypeComboBox.getSelectionIndex();
+		if (items.length == 0 || selectedIndex == -1) { return; }
+				
+		selectedLibcType = LibCType.fromText(items[selectedIndex]);
+        
+		List<Pkg> selection = selectedPkgs.stream()
+                                          .filter(pkg -> pkg.isJavaFXBundled() == javafxBundled)
+                                          .filter(pkg -> selectedDistribution.getApiString().equals(pkg.getDistribution().getApiString()))
+                                          .filter(pkg -> selectedOperatingSystem == pkg.getOperatingSystem())
+                                          .filter(pkg -> selectedLibcType        == pkg.getLibCType())
+                                          .collect(Collectors.toList());
+        architectures = selection.stream().map(pkg -> pkg.getArchitecture()).collect(Collectors.toSet());
+		display.asyncExec(() -> {			
+            architectureComboBox.removeAll();
+            architectures.forEach(architecture -> architectureComboBox.add(architecture.getUiString()));
+            architectureComboBox.select(0);
+            architectureComboBox.notifyListeners(SWT.Selection, new Event());
+            selectArchitecture();
+		});
+    }
+    
+    private void selectArchitecture() {
+    	String[] items         = architectureComboBox.getItems();
+		int      selectedIndex = architectureComboBox.getSelectionIndex();
+		if (items.length == 0 || selectedIndex == -1) { return; }
+		
+		selectedArchitecture = Architecture.fromText(items[selectedIndex]);
+		List<Pkg> selection = selectedPkgs.stream()
+                .filter(pkg -> pkg.isJavaFXBundled() == javafxBundled)
+                .filter(pkg -> selectedDistribution.getApiString().equals(pkg.getDistribution().getApiString()))
+                .filter(pkg -> selectedOperatingSystem == pkg.getOperatingSystem())
+                .filter(pkg -> selectedLibcType        == pkg.getLibCType())
+                .filter(pkg -> selectedArchitecture    == pkg.getArchitecture())
+                .collect(Collectors.toList());
+        archiveTypes = selection.stream().map(pkg -> pkg.getArchiveType()).collect(Collectors.toSet());
+		display.asyncExec(() -> {
+            archiveTypeComboBox.removeAll();
+            archiveTypes.forEach(archiveType -> archiveTypeComboBox.add(archiveType.getUiString()));
+            archiveTypeComboBox.select(0);
+            archiveTypeComboBox.notifyListeners(SWT.Selection, new Event());
+            selectArchiveType();
+		});
+    }
+    
+    private void selectArchiveType() {
+    	String[] items         = archiveTypeComboBox.getItems();
+		int      selectedIndex = archiveTypeComboBox.getSelectionIndex();
+		if (items.length == 0 || selectedIndex == -1) { return; }
+		
+		selectedArchiveType = ArchiveType.fromText(items[selectedIndex]);
+		update();
+    }
+    
+    private void update() {
+    	List<Pkg> selection = selectedPkgs.stream()
+                .filter(pkg -> pkg.isJavaFXBundled()   == javafxBundled)
+                .filter(pkg -> selectedDistribution.getApiString().equals(pkg.getDistribution().getApiString()))
+                .filter(pkg -> selectedOperatingSystem == pkg.getOperatingSystem())
+                .filter(pkg -> selectedLibcType        == pkg.getLibCType())
+                .filter(pkg -> selectedArchitecture    == pkg.getArchitecture())
+                .filter(pkg -> selectedArchiveType     == pkg.getArchiveType())
+                .collect(Collectors.toList());
+    	
+    	if (selection.size() > 0) {
+            selectedPkg = selection.get(0);
+            display.asyncExec(() -> filenameLabel.setText(null == selectedPkg ? "-" : selectedPkg.getFileName()));
+        } else {
+            selectedPkg = null;
+            display.asyncExec(() -> filenameLabel.setText("-"));
+        }
+    }
     
     private void downloadPkg() {
         if (null == selectedPkg) { return; }

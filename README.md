@@ -5,7 +5,7 @@
 
 The DiscoEclipse plugin will offer you the ability to discover and download a Java SDK from a list of different distributions.
 
-![Plugin](https://github.com/foojay2020/discoeclipse/raw/master/screenshot.png)
+![Plugin](https://github.com/foojay2020/discoeclipse/raw/main/screenshot.png)
 
 
 ### To select and download a JDK please follow the procedure below:

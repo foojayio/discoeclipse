@@ -10,7 +10,6 @@ import java.nio.channels.ReadableByteChannel;
 import java.util.Comparator;
 import java.util.LinkedList;
 import java.util.List;
-import java.util.Optional;
 import java.util.Set;
 import java.util.TreeSet;
 import java.util.stream.Collectors;
@@ -58,7 +57,6 @@ import io.foojay.api.discoclient.util.ReadableConsumerByteChannel;
 public class JdkSelectorDialog extends Dialog {
 	private Display              display;
 	private DiscoClient 	     discoClient;
-	private OperatingSystem      operatingSystem;
 	private List<MajorVersion>   maintainedVersions;
 	private List<Pkg>            selectedPkgs;
 	private Pkg                  selectedPkg;
@@ -95,7 +93,6 @@ public class JdkSelectorDialog extends Dialog {
 		super(parentShell);
 		display            			= parentShell.getDisplay();
 		discoClient        			= new DiscoClient("Eclipse");
-		operatingSystem    			= DiscoClient.getOperatingSystem();
 		maintainedVersions 		    = new LinkedList<>();
 		selectedPkgs       			= new LinkedList<>();
 		selectedPkg        			= null;
@@ -445,7 +442,7 @@ public class JdkSelectorDialog extends Dialog {
 		int      selectedIndex = distributionComboBox.getSelectionIndex();
 		if (items.length == 0 || selectedIndex == -1) { return; }
 		
-		selectedDistribution = discoClient.getDistributionFromText(items[selectedIndex]);
+		selectedDistribution = DiscoClient.getDistributionFromText(items[selectedIndex]);
 		
 		selectedPkgs.clear();
         operatingSystems.clear();
@@ -467,7 +464,7 @@ public class JdkSelectorDialog extends Dialog {
 			operatingSystemComboBox.removeAll();
 			operatingSystems.forEach(os -> operatingSystemComboBox.add(os.getUiString()));
 			for (int i = 0 ; i < operatingSystems.size() ; i++) {
-				if (operatingSystemComboBox.getItem(i).equals(discoClient.getOperatingSystem().getUiString())) {
+				if (operatingSystemComboBox.getItem(i).equals(DiscoClient.getOperatingSystem().getUiString())) {
 					operatingSystemComboBox.select(i);
 					break;
 				}
